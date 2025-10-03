@@ -12,7 +12,6 @@ We sincerely appreciate the [PCB repository](https://github.com/kaist-dmlab/pcb)
 ``` bash
 conda create -n pcb python=3.10 
 conda activate pcb 
-cd pcb 
 pip install -r requirements.txt 
 ```
 
