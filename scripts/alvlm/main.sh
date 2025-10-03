@@ -7,10 +7,7 @@ ALMETHOD=$3 # Active learning method (random, entropy, coreset, badge)
 SEED=$4 # SEED number 
 MODE=$5 # [none, AS, AE]
 
-
-DATA=/go/to/data # YOU NEED TO FIX IT
-
-
+DATA=/hdd/hdd2/sch/DATA # YOU NEED TO FIX IT
 TRAINER=ALVLM
 CTP="end"  # class token position (end or middle)
 NCTX=16  # number of context tokens

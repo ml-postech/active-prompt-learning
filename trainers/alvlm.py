@@ -22,9 +22,64 @@ from .active_learning.pcb import PCB
 from .active_learning.badge import BADGE
 from .active_learning.coreset import Coreset
 from .active_learning.entropy import Entropy
+from .active_learning.cb import CB
+from .active_learning.cbsq import CBSQ
 
 _tokenizer = _Tokenizer()
 
+CUSTOM_TEMPLATES = {
+    "OxfordPets": "a photo of a {}, a type of pet.",
+    "OxfordFlowers": "a photo of a {}, a type of flower.",
+    "FGVCAircraft": "a photo of a {}, a type of aircraft.",
+    "DescribableTextures": "{} texture.",
+    "EuroSAT": "a centered satellite photo of {}.",
+    "StanfordCars": "a photo of a {}.",
+    "Food101": "a photo of {}, a type of food.",
+    "SUN397": "a photo of a {}.",
+    "Caltech101": "a photo of a {}.",
+    "UCF101": "a photo of a person doing {}.",
+    "ImageNet": "a photo of a {}.",
+    "ImageNetSketch": "a photo of a {}.",
+    "ImageNetV2": "a photo of a {}.",
+    "ImageNetA": "a photo of a {}.",
+    "ImageNetR": "a photo of a {}.",
+    "HAM10000": "a photo of a skin lesion of type {}.", # 
+    "KaoKore": "a Japanese artwork of a {}."
+}
+
+@TRAINER_REGISTRY.register()
+class ZeroshotCLIP(TrainerX):
+    def build_model(self):
+        cfg = self.cfg
+        classnames = self.dm.dataset.classnames
+
+        # print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
+        clip_model = load_clip_to_cpu(cfg)
+        clip_model.to(self.device)
+
+        temp = CUSTOM_TEMPLATES[cfg.DATASET.NAME]
+        prompts = [temp.format(c.replace("_", " ")) for c in classnames]
+        # print(f"Prompts: {prompts}")
+        prompts = torch.cat([clip.tokenize(p) for p in prompts])
+        prompts = prompts.to(self.device)
+
+        with torch.no_grad():
+            text_features = clip_model.encode_text(prompts)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+        self.text_features = text_features
+        self.clip_model = clip_model
+
+    def model_inference(self, image, get_feature=False):
+        image_features = self.clip_model.encode_image(image)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        logit_scale = self.clip_model.logit_scale.exp()
+        logits = logit_scale * image_features @ self.text_features.t()
+
+        if get_feature:
+            return logits, image_features, self.text_features
+        else:
+            return logits
 
 
 def load_clip_to_cpu(cfg):
@@ -223,7 +278,7 @@ class PromptLearner(nn.Module):
 class CustomCLIP(nn.Module):
     def __init__(self, cfg, classnames, clip_model, desc_file=None):
         super().__init__()
-        
+
         self.prompt_learner = PromptLearner(cfg, classnames, clip_model)
         self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.image_encoder = clip_model.visual
@@ -245,12 +300,11 @@ class CustomCLIP(nn.Module):
                 self.n_class_desc.append(len(desc_dict[name]))
             
         
-    def forward(self, image, get_feature=False):
+    def forward(self, image, get_feature=False, get_text_feature=False):
         image_features = self.image_encoder(image.type(self.dtype))
         
         prompts = self.prompt_learner()
         tokenized_prompts = self.tokenized_prompts
-        
     
         text_features = self.text_encoder(prompts, tokenized_prompts)
         
@@ -264,7 +318,7 @@ class CustomCLIP(nn.Module):
 
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
+        
         logit_scale = self.logit_scale.exp()
         logits = logit_scale * image_features @ text_features.t()
         
@@ -276,8 +330,18 @@ class CustomCLIP(nn.Module):
                 start += n
             logits = torch.stack(tmp, dim=1)
 
+            tmp = []
+            start = 0
+            for n in self.n_class_desc:
+                tmp.append(text_features[start:start+n].mean(dim=0))
+                start += n
+            text_features = torch.stack(tmp)
+        
         if get_feature:
-            return logits, image_features
+            if get_text_feature:
+                return logits, image_features, text_features
+            else:
+                return logits, image_features
         else:
             return logits
 
@@ -439,41 +503,68 @@ class ALVLM(TrainerX):
         else:
             n_query = dataset.get_num_classes(unlabeled_dst)
         n_cand = int(len(unlabeled_dst) * self.cfg.TRAINER.COOPAL.GAMMA) # 10% of entire dataset
-        
-     
+        budgets = [(i + 1) * n_query for i in range(8)]
         
         dataset._train_x = []
         for i in range(8):
             start = time.time()
-            if self.cfg.TRAINER.COOPAL.METHOD == "random" or i ==0:
+            if self.cfg.TRAINER.COOPAL.METHOD == "cb":
+                val_x = dataset._train_x.copy()
+                if i == 0:
+                    zsclip = ZeroshotCLIP(self.cfg)
+                    zsclip.build_model()
+                    selector = CB(self.cfg, zsclip, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst), self.device, i)
+                else:
+                    selector = CB(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst), self.device, i)
+                idx = selector.select(n_query)
+            elif self.cfg.TRAINER.COOPAL.METHOD == "cbsq":
+                val_x = dataset._train_x.copy()
+                if i == 0:
+                    zsclip = ZeroshotCLIP(self.cfg)
+                    zsclip.build_model()
+                    selector = CB(self.cfg, zsclip, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst), self.device, i)
+                    idx = selector.select(n_query)
+                else:
+                    selector = CBSQ(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst), self.device, i)
+                    idx, save, _ = selector.select(n_query)
+                    budgets[i] -= save
+            elif self.cfg.TRAINER.COOPAL.METHOD == "random" or i ==0:
                 idx = sample(U_index, n_query)
             elif self.cfg.TRAINER.COOPAL.METHOD == "entropy":
                 selector = Entropy(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
-                idx = selector.select(n_cand)
+                idx = selector.select(n_query)
             elif self.cfg.TRAINER.COOPAL.METHOD == "badge":
                 selector = BADGE(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
-                idx = selector.select(n_cand)
+                idx = selector.select(n_query)
             elif self.cfg.TRAINER.COOPAL.METHOD == "coreset":
                 val_x = dataset._train_x.copy()
                 selector = Coreset(self.cfg, self.model, unlabeled_dst, U_index, val_x, dataset.get_num_classes(unlabeled_dst))
+                idx = selector.select(n_query)
+            elif self.cfg.TRAINER.COOPAL.METHOD == "pcb":
+                selector = BADGE(self.cfg, self.model, unlabeled_dst, U_index, dataset.get_num_classes(unlabeled_dst), self.device)
                 idx = selector.select(n_cand)
             else:
                 print("NotImplementedError")
                 idx = U_index
             
-            if i != 0:
+            if i != 0 and self.cfg.TRAINER.COOPAL.METHOD == "pcb":
                 statistics = torch.zeros(self.num_classes)
                 for elem in dataset._train_x:
                     statistics[elem.label] += 1
                 selector = PCB(self.cfg, self.model, unlabeled_dst, idx, dataset.get_num_classes(unlabeled_dst), statistics, self.device)
                 idx = selector.select(n_query)
             
-            # Filtering 
-            for k in idx:
-                dataset._train_x.append(unlabeled_dst[k])
-                U_index.remove(k)
-            assert len(U_index) + len(dataset.train_x) == len(unlabeled_dst), f"u index: {len(U_index)}\t train set: {len(dataset.train_x)}\t unlabeled_dst: {len(unlabeled_dst)}"
-            
+            # Filtering
+            if i != 0 and self.cfg.TRAINER.COOPAL.METHOD == "cbsq":
+                for k, label, _ in idx:
+                    unlabeled_dst[k]._label = label
+                    dataset._train_x.append(unlabeled_dst[k])
+                    U_index.remove(k)
+            else:
+                for k in idx:
+                    dataset._train_x.append(unlabeled_dst[k])
+                    U_index.remove(k)
+
             self.train_loader_x = build_data_loader(
                 self.cfg,
                 sampler_type=self.cfg.DATALOADER.TRAIN_X.SAMPLER,
@@ -493,8 +584,8 @@ class ALVLM(TrainerX):
                 self.after_epoch()
             self.after_train()
             print("training time for {}-th round: {:.2f} seconds".format(i, time.time() - start))
-        print("=== Result Overview ===")
-        for i in range(len(self.acc)):
-            print(f"{i}: {self.acc[i]}")
-        print("=======================")    
+            print("=== Result Overview ===")
+            for i in range(len(self.acc)):
+                print(f"{i}: {self.acc[i]}, {budgets[i]}")
+            print("=======================")    
             
