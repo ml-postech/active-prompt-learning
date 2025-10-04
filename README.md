@@ -18,7 +18,15 @@ pip install -r requirements.txt
 Next, you should build on the datasets - follow [DATASETS.md](DATASETS.md) to install the datasets.
 
 ## How to Run
-Todo
+To run the code, you need to look into `scripts/alvlm/main.sh`. In this file, you must set parameter `DATA` as the directory path that datasets are stored. After then, you can run the code by following command. 
+```bash
+CUDA_VISIBLE_DEVICES=XX sh scripts/alvlm/main.sh [DATASET NAME] [MODEL NAME] [AL METHOD] [SEED NUMBER] [MODE] 
+```
+- **DATASET NAME** $\in$ [oxford_flowers, dtd, oxford_pets, caltech101, stanford_cars, eurosat, fgvc_aircraft]
+- **MODEL NAME** $\in$ [RN50, RN101, vit_b32, vit_b16]
+- **AL METHOD** $\in$ [random, entropy, coreset, badge, pcb, cb, cbsq]
+- **SEED**: integer 
+- **MODE**: This is for description augmentation $\in$ [none, AS, AE]
 
 ## Cite
 Please cite our paper if you use the model or this code in your own work:
@@ -26,8 +34,8 @@ Please cite our paper if you use the model or this code in your own work:
 @inproceedings{kim2025active,
   title={Active Prompt Learning with Vision-Language Model Priors},
   author={Hoyoung Kim and Seokhee Jin and Changhwan Sung and Jaechang Kim and Jungseul Ok},
-  booktitle=arXiv,
-  year={2024},
+  booktitle=TMLR,
+  year={2025},
   url={https://arxiv.org/abs/2411.16722}
 }
 ```
