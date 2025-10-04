@@ -1,5 +1,5 @@
 # Active Prompt Learning with Vision-Language Model Priors
-This repository is the official implementation of ["Active Prompt Learning with Vision-Language Model Priors"](https://arxiv.org/abs/2411.16722)
+This repository is the official implementation of ["Active Prompt Learning with Vision-Language Model Priors"](https://arxiv.org/abs/2411.16722) accepted by TMLR 2025.
 
 <img src='main-figure.PNG'>
 
